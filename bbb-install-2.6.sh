@@ -99,6 +99,9 @@ HERE
 }
 
 main() {
+  echo "==== MEASUREMENT: Checks"
+  SECONDS=0
+
   export DEBIAN_FRONTEND=noninteractive
   PACKAGE_REPOSITORY=ubuntu.bigbluebutton.org
   LETS_ENCRYPT_OPTIONS="--webroot --non-interactive"
@@ -192,6 +195,11 @@ main() {
 
   check_apache2
 
+  echo "==== MEASUREMENT: Checks --> $SECONDS seconds"
+  SECONDS=0
+  echo "==== MEASUREMENT: Coturn"
+
+
   # Check if we're installing coturn (need an e-mail address for Let's Encrypt)
   if [ -z "$VERSION" ] && [ -n "$COTURN" ]; then
     if [ -z "$EMAIL" ]; then err "Installing coturn needs an e-mail address for Let's Encrypt"; fi
@@ -200,6 +208,10 @@ main() {
     install_coturn
     exit 0
   fi
+
+  echo "==== MEASUREMENT: Coturn --> $SECONDS seconds"
+  SECONDS=0
+  echo "==== MEASUREMENT: Further Checks"
 
   if [ -z "$VERSION" ]; then
     usage
@@ -215,15 +227,29 @@ main() {
   fi
   check_mem
 
+  echo "==== MEASUREMENT: Further Checks --> $SECONDS seconds"
+  SECONDS=0
+  echo "==== MEASUREMENT: Install needed pkgs"
+
   need_pkg software-properties-common  # needed for add-apt-repository
   sudo add-apt-repository universe
   need_pkg wget curl gpg-agent dirmngr
+
+  echo "==== MEASUREMENT: Install needed pkgs --> $SECONDS seconds"
 
   # need_pkg xmlstarlet
   get_IP "$HOST"
 
   if [ "$DISTRO" == "focal" ]; then
+    SECONDS=0
+    echo "==== MEASUREMENT: pkg ca-certs"
+
     need_pkg ca-certificates
+
+    echo "==== MEASUREMENT: pkg ca-certs --> $SECONDS seconds"
+
+    SECONDS=0
+    echo "==== MEASUREMENT: Install PPAs"
 
     # yq version 3 is provided by ppa:bigbluebutton/support
     # Uncomment the following to enable yq 4 after bigbluebutton/bigbluebutton#14511 is resolved
@@ -237,6 +263,10 @@ main() {
 
     rm -rf /etc/apt/sources.list.d/kurento.list     # Kurento 6.15 now packaged with 2.3
 
+    echo "==== MEASUREMENT: Install PPAs --> $SECONDS seconds"
+    SECONDS=0
+    echo "==== MEASUREMENT: Install nodejs"
+
     if grep -q 12 /etc/apt/sources.list.d/nodesource.list ; then # Node 12 might be installed, previously used in BigBlueButton
       sudo apt-get purge nodejs
       sudo rm -r /etc/apt/sources.list.d/nodesource.list
@@ -247,6 +277,12 @@ main() {
     if ! apt-cache madison nodejs | grep -q node_16; then
       err "Did not detect nodejs 16.x candidate for installation"
     fi
+
+    echo "==== MEASUREMENT: Install node --> $SECONDS seconds"
+    SECONDS=0
+    echo "==== MEASUREMENT: Install Mongo"
+
+
     if ! apt-key list MongoDB | grep -q 4.4; then
       wget -qO - https://www.mongodb.org/static/pgp/server-4.4.asc | sudo apt-key add -
     fi
@@ -255,36 +291,85 @@ main() {
 
     touch /root/.rnd
     MONGODB=mongodb-org
+
+    echo "==== MEASUREMENT: Install Mongo --> $SECONDS seconds"
+    SECONDS=0
+    echo "==== MEASUREMENT: Install docker"
+
     install_docker		                     # needed for bbb-libreoffice-docker
+
+    echo "==== MEASUREMENT: Install docker --> $SECONDS seconds"
+    SECONDS=0
+    echo "==== MEASUREMENT: Docker get Java"
+
     docker pull openjdk:11-jre-buster      # fix issue 413
     docker tag openjdk:11-jre-buster openjdk:11-jre
+
+    echo "==== MEASUREMENT: Docker get Java --> $SECONDS seconds"
+    SECONDS=0
+    echo "==== MEASUREMENT: Install Ruby"
+
     need_pkg ruby
+
+    echo "==== MEASUREMENT: Install Ruby --> $SECONDS seconds"
 
     BBB_WEB_ETC_CONFIG=/etc/bigbluebutton/bbb-web.properties            # Override file for local settings 
 
+    SECONDS=0
+    echo "==== MEASUREMENT: Install Java"
+
     need_pkg openjdk-11-jre
     update-java-alternatives -s java-1.11.0-openjdk-amd64
+
+    echo "==== MEASUREMENT: Install Java --> $SECONDS seconds"
   fi
 
+  SECONDS=0
+  echo "==== MEASUREMENT: apt-get update"
   apt-get update
+  echo "==== MEASUREMENT: apt-get update --> $SECONDS seconds"
+  SECONDS=0
+  echo "==== MEASUREMENT: dist-upgrade"
   apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confnew" dist-upgrade
+  echo "==== MEASUREMENT: dist-upgrade --> $SECONDS seconds"
 
+  SECONDS=0
+  echo "==== MEASUREMENT: Install node, mongo, apt-https, haveged"
   need_pkg nodejs $MONGODB apt-transport-https haveged
+  echo "==== MEASUREMENT: Install node, mongo, apt-https, haveged --> $SECONDS seconds"
+  SECONDS=0
+  echo "==== MEASUREMENT: Install bigbluebutton"
   need_pkg bigbluebutton
+  echo "==== MEASUREMENT: Install bigbluebutton --> $SECONDS seconds"
+  SECONDS=0
+  echo "==== MEASUREMENT: Install bbbhtml5"
   need_pkg bbb-html5
+  echo "==== MEASUREMENT: Install bbbhtml5 --> $SECONDS seconds"
 
   if [ -f /usr/share/bbb-web/WEB-INF/classes/bigbluebutton.properties ]; then
     SERVLET_DIR=/usr/share/bbb-web
     TURN_XML=$SERVLET_DIR/WEB-INF/classes/spring/turn-stun-servers.xml
   fi
 
+  SECONDS=0
+  echo "==== MEASUREMENT: Wait for bbb.properties"
   while [ ! -f $SERVLET_DIR/WEB-INF/classes/bigbluebutton.properties ]; do sleep 1; echo -n '.'; done
+  echo "==== MEASUREMENT: Wait for bbb.properties --> $SECONDS seconds"
+  SECONDS=0
+  echo "==== MEASUREMENT: Checks 3"
 
   check_lxc
   check_nat
   check_LimitNOFILE
 
+  echo "==== MEASUREMENT: Checks 3 --> $SECONDS seconds"
+  SECONDS=0
+  echo "==== MEASUREMENT: Configure html5"
+
   configure_HTML5 
+
+  echo "==== MEASUREMENT: Configure html5 --> $SECONDS seconds"
+
 
   if [ -n "$API_DEMOS" ]; then
     err "Attention: bbb-demo (API demos, '-a' option) were deprecated in BigBlueButton 2.6. Please use Greenlight or API MATE"
@@ -294,32 +379,56 @@ main() {
     ln -s "$LINK_PATH" "/var/bigbluebutton"
   fi
 
+  SECONDS=0
+  echo "==== MEASUREMENT: Install SSL"
   if [ -n "$PROVIDED_CERTIFICATE" ] ; then
     install_ssl
   elif [ -n "$HOST" ] && [ -n "$EMAIL" ] ; then
     install_ssl
   fi
+  echo "==== MEASUREMENT: Install SSL --> $SECONDS seconds"
+  SECONDS=0
+  echo "==== MEASUREMENT: Install Greenlight"
 
   if [ -n "$GREENLIGHT" ]; then
     install_greenlight
   fi
 
+  echo "==== MEASUREMENT: Install Greenlight --> $SECONDS seconds"
+  SECONDS=0
+  echo "==== MEASUREMENT: Configure coturn"
+
   if [ -n "$COTURN" ]; then
     configure_coturn
   fi
 
+  echo "==== MEASUREMENT: Configure coturn --> $SECONDS seconds"
+  SECONDS=0
+  echo "==== MEASUREMENT: apt-get auto-remove"
+
   apt-get auto-remove -y
+
+  echo "==== MEASUREMENT: apt-get auto-remove --> $SECONDS seconds"
 
   if systemctl status freeswitch.service | grep -q SETSCHEDULER; then
     sed -i "s/^CPUSchedulingPolicy=rr/#CPUSchedulingPolicy=rr/g" /lib/systemd/system/freeswitch.service
     systemctl daemon-reload
   fi
 
+  SECONDS=0
+  echo "==== MEASUREMENT: Restart journald"
   systemctl restart systemd-journald
+  echo "==== MEASUREMENT: Restart journald --> $SECONDS seconds"
+  SECONDS=0
+  echo "==== MEASUREMENT: Setup ufw"
 
   if [ -n "$UFW" ]; then
     setup_ufw 
   fi
+  echo "==== MEASUREMENT: Setup ufw --> $SECONDS seconds"
+  SECONDS=0
+  echo "==== MEASUREMENT: bbb-conf --set-ip"
+
 
   if [ -n "$HOST" ]; then
     bbb-conf --setip "$HOST"
@@ -327,11 +436,16 @@ main() {
     bbb-conf --setip "$IP"
   fi
 
+  echo "==== MEASUREMENT: bbb-conf --set-ip --> $SECONDS seconds"
+
   if ! systemctl show-environment | grep LANG= | grep -q UTF-8; then
     sudo systemctl set-environment LANG=C.UTF-8
   fi
 
+  SECONDS=0
+  echo "==== MEASUREMENT: bbb-conf --check"
   bbb-conf --check
+  echo "==== MEASUREMENT: bbb-conf --check --> $SECONDS seconds"
 }
 
 say() {
