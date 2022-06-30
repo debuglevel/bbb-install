@@ -154,7 +154,7 @@ main() {
         GREENLIGHT=true
         ;;
       a)
-        API_DEMOS=true
+        err "bbb-demo (API demos, '-a' option) were deprecated in BigBlueButton 2.6. Please use Greenlight or API MATE"
         ;;
       m)
         LINK_PATH=$OPTARG
@@ -206,14 +206,17 @@ main() {
     exit 0
   fi
 
+
   # We're installing BigBlueButton
+  say "Printing environment variables:"
   env
 
   if [ "$DISTRO" == "focal" ]; then 
     check_ubuntu 20.04
     TOMCAT_USER=tomcat9
   fi
-  check_mem
+
+  check_minimum_memory
 
   need_pkg software-properties-common  # needed for add-apt-repository
   sudo add-apt-repository universe
@@ -225,45 +228,24 @@ main() {
   if [ "$DISTRO" == "focal" ]; then
     need_pkg ca-certificates
 
-    # yq version 3 is provided by ppa:bigbluebutton/support
-    # Uncomment the following to enable yq 4 after bigbluebutton/bigbluebutton#14511 is resolved
-    #need_ppa rmescandon-ubuntu-yq-bionic.list         ppa:rmescandon/yq          CC86BB64 # Edit yaml files with yq
+    add_ppa
 
-    #need_ppa libreoffice-ubuntu-ppa-focal.list       ppa:libreoffice/ppa        1378B444 # Latest version of libreoffice
-    need_ppa bigbluebutton-ubuntu-support-focal.list ppa:bigbluebutton/support  E95B94BC # Needed for libopusenc0
-    if ! apt-key list 5AFA7A83 | grep -q -E "1024|4096"; then   # Add Kurento package
-      sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 5AFA7A83
-    fi
+    rm -rf /etc/apt/sources.list.d/kurento.list # Kurento 6.15 now packaged with 2.3
 
-    rm -rf /etc/apt/sources.list.d/kurento.list     # Kurento 6.15 now packaged with 2.3
+    install_nodejs
+    install_mongodb
 
-    if grep -q 12 /etc/apt/sources.list.d/nodesource.list ; then # Node 12 might be installed, previously used in BigBlueButton
-      sudo apt-get purge nodejs
-      sudo rm -r /etc/apt/sources.list.d/nodesource.list
-    fi
-    if [ ! -f /etc/apt/sources.list.d/nodesource.list ]; then
-      curl -sL https://deb.nodesource.com/setup_16.x | sudo -E bash -
-    fi
-    if ! apt-cache madison nodejs | grep -q node_16; then
-      err "Did not detect nodejs 16.x candidate for installation"
-    fi
-    if ! apt-key list MongoDB | grep -q 4.4; then
-      wget -qO - https://www.mongodb.org/static/pgp/server-4.4.asc | sudo apt-key add -
-    fi
-    echo "deb [ arch=amd64 ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/4.4 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-4.4.list
-    rm -f /etc/apt/sources.list.d/mongodb-org-4.2.list
+    install_docker # needed for bbb-libreoffice-docker
 
-    touch /root/.rnd
-    MONGODB=mongodb-org
-    install_docker		                     # needed for bbb-libreoffice-docker
-    docker pull openjdk:11-jre-buster      # fix issue 413
+    # Fix for https://github.com/bigbluebutton/bbb-install/issues/413
+    docker pull openjdk:11-jre-buster
     docker tag openjdk:11-jre-buster openjdk:11-jre
+
     need_pkg ruby
 
-    BBB_WEB_ETC_CONFIG=/etc/bigbluebutton/bbb-web.properties            # Override file for local settings 
+    BBB_WEB_ETC_CONFIG=/etc/bigbluebutton/bbb-web.properties # Override file for local settings 
 
-    need_pkg openjdk-11-jre
-    update-java-alternatives -s java-1.11.0-openjdk-amd64
+    install_java
   fi
 
   apt-get update
@@ -278,25 +260,22 @@ main() {
     TURN_XML=$SERVLET_DIR/WEB-INF/classes/spring/turn-stun-servers.xml
   fi
 
+  say "Waiting for $SERVLET_DIR/WEB-INF/classes/bigbluebutton.properties ..."
   while [ ! -f $SERVLET_DIR/WEB-INF/classes/bigbluebutton.properties ]; do sleep 1; echo -n '.'; done
 
-  check_lxc
-  check_nat
-  check_LimitNOFILE
+  configure_freeswitch_service_for_lxc
+  configure_freeswitch_ips
+  configure_LimitNOFILE
 
-  configure_HTML5 
-
-  if [ -n "$API_DEMOS" ]; then
-    err "Attention: bbb-demo (API demos, '-a' option) were deprecated in BigBlueButton 2.6. Please use Greenlight or API MATE"
-  fi
+  configure_STUN 
 
   if [ -n "$LINK_PATH" ]; then
     ln -s "$LINK_PATH" "/var/bigbluebutton"
   fi
 
-  if [ -n "$PROVIDED_CERTIFICATE" ] ; then
+  if [ -n "$PROVIDED_CERTIFICATE" ]; then
     install_ssl
-  elif [ -n "$HOST" ] && [ -n "$EMAIL" ] ; then
+  elif [ -n "$HOST" ] && [ -n "$EMAIL" ]; then
     install_ssl
   fi
 
@@ -310,15 +289,12 @@ main() {
 
   apt-get auto-remove -y
 
-  if systemctl status freeswitch.service | grep -q SETSCHEDULER; then
-    sed -i "s/^CPUSchedulingPolicy=rr/#CPUSchedulingPolicy=rr/g" /lib/systemd/system/freeswitch.service
-    systemctl daemon-reload
-  fi
+  configure_freeswitch_service
 
   systemctl restart systemd-journald
 
   if [ -n "$UFW" ]; then
-    setup_ufw 
+    setup_ufw
   fi
 
   if [ -n "$HOST" ]; then
@@ -327,9 +303,7 @@ main() {
     bbb-conf --setip "$IP"
   fi
 
-  if ! systemctl show-environment | grep LANG= | grep -q UTF-8; then
-    sudo systemctl set-environment LANG=C.UTF-8
-  fi
+  configure_language
 
   bbb-conf --check
 }
@@ -347,7 +321,7 @@ check_root() {
   if [ $EUID != 0 ]; then err "You must run this command as root."; fi
 }
 
-check_mem() {
+check_minimum_memory() {
   if awk '$1~/MemTotal/ {exit !($2<3940000)}' /proc/meminfo; then
     err "Your server needs to have (at least) 4G of memory."
   fi
@@ -446,7 +420,10 @@ get_IP() {
 
 need_pkg() {
   check_root
-  while fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 1; done
+  while fuser /var/lib/dpkg/lock >/dev/null 2>&1; do 
+    echo "Waiting for dpkg lock..."
+    sleep 1;
+  done
 
   if [ ! "$SOURCES_FETCHED" = true ]; then
     apt-get update
@@ -520,7 +497,7 @@ check_apache2() {
 }
 
 # If running under LXC, then modify the FreeSWITCH systemctl service so it does not use realtime scheduler
-check_lxc() {
+configure_freeswitch_service_for_lxc() {
   if grep -qa container=lxc /proc/1/environ; then
     if grep IOSchedulingClass /lib/systemd/system/freeswitch.service > /dev/null; then
       cat > /lib/systemd/system/freeswitch.service << HERE
@@ -561,7 +538,7 @@ fi
 }
 
 # Check if running externally with internal/external IP addresses
-check_nat() {
+configure_freeswitch_ips() {
   xmlstarlet edit --inplace --update '//X-PRE-PROCESS[@cmd="set" and starts-with(@data, "external_rtp_ip=")]/@data' --value "external_rtp_ip=$IP" /opt/freeswitch/conf/vars.xml
   xmlstarlet edit --inplace --update '//X-PRE-PROCESS[@cmd="set" and starts-with(@data, "external_sip_ip=")]/@data' --value "external_sip_ip=$IP" /opt/freeswitch/conf/vars.xml
 
@@ -602,12 +579,12 @@ HERE
   fi
 }
 
-check_LimitNOFILE() {
+configure_LimitNOFILE() {
   CPU=$(nproc --all)
 
   if [ "$CPU" -ge 8 ]; then
     if [ -f /lib/systemd/system/bbb-web.service ]; then
-      # Let's create an override file to increase the number of LimitNOFILE 
+      # Create an override file to increase the number of LimitNOFILE 
       mkdir -p /etc/systemd/system/bbb-web.service.d/
       cat > /etc/systemd/system/bbb-web.service.d/override.conf << HERE
 [Service]
@@ -618,26 +595,16 @@ HERE
   fi
 }
 
-configure_HTML5() {
+configure_STUN() {
   # Use Google's default STUN server
   if [ -n "$INTERNAL_IP" ]; then
-   sed -i "s/[;]*externalIPv4=.*/externalIPv4=$IP/g"                   /etc/kurento/modules/kurento/WebRtcEndpoint.conf.ini
-   sed -i "s/[;]*iceTcp=.*/iceTcp=0/g"                                 /etc/kurento/modules/kurento/WebRtcEndpoint.conf.ini
+   sed -i "s/[;]*externalIPv4=.*/externalIPv4=$IP/g" /etc/kurento/modules/kurento/WebRtcEndpoint.conf.ini
+   sed -i "s/[;]*iceTcp=.*/iceTcp=0/g"               /etc/kurento/modules/kurento/WebRtcEndpoint.conf.ini
   fi
 }
 
 install_greenlight(){
   install_docker
-
-  # Purge older docker compose
-  if dpkg -l | grep -q docker-compose; then
-    apt-get purge -y docker-compose
-  fi
-
-  if [ ! -x /usr/local/bin/docker-compose ]; then
-    curl -L "https://github.com/docker/compose/releases/download/1.24.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
-  fi
 
   if [ ! -d ~/greenlight ]; then
     mkdir -p ~/greenlight
@@ -646,6 +613,7 @@ install_greenlight(){
   # This will trigger the download of Greenlight docker image (if needed)
   SECRET_KEY_BASE=$(docker run --rm bigbluebutton/greenlight:v2 bundle exec rake secret)
 
+  # Create default .env file if not existing
   if [ ! -f ~/greenlight/.env ]; then
     docker run --rm bigbluebutton/greenlight:v2 cat ./sample.env > ~/greenlight/.env
   fi
@@ -654,7 +622,7 @@ install_greenlight(){
   BIGBLUEBUTTON_SECRET=$(cat $SERVLET_DIR/WEB-INF/classes/bigbluebutton.properties $BBB_WEB_ETC_CONFIG | grep -v '#' | grep ^securitySalt | tail -n 1  | cut -d= -f2)
   SAFE_HOSTS=$(cat $SERVLET_DIR/WEB-INF/classes/bigbluebutton.properties $BBB_WEB_ETC_CONFIG | grep -v '#' | sed -n '/^bigbluebutton.web.serverURL/{s/.*=//;p}' | tail -n 1 | sed 's/https\?:\/\///')
 
-  # Update Greenlight configuration file in ~/greenlight/env
+  # Update Greenlight configuration file in ~/greenlight/.env
   sed -i "s|SECRET_KEY_BASE=.*|SECRET_KEY_BASE=$SECRET_KEY_BASE|"                   ~/greenlight/.env
   sed -i "s|.*BIGBLUEBUTTON_ENDPOINT=.*|BIGBLUEBUTTON_ENDPOINT=$BIGBLUEBUTTON_URL|" ~/greenlight/.env
   sed -i "s|.*BIGBLUEBUTTON_SECRET=.*|BIGBLUEBUTTON_SECRET=$BIGBLUEBUTTON_SECRET|"  ~/greenlight/.env
@@ -662,6 +630,7 @@ install_greenlight(){
 
   # need_pkg bbb-webhooks
 
+  # Create nginx configuration to redirect / to /b
   if [ ! -f /usr/share/bigbluebutton/nginx/greenlight.nginx ]; then
     docker run --rm bigbluebutton/greenlight:v2 cat ./greenlight.nginx | tee /usr/share/bigbluebutton/nginx/greenlight.nginx
     cat > /usr/share/bigbluebutton/nginx/greenlight-redirect.nginx << HERE
@@ -676,11 +645,12 @@ HERE
     gem install jwt java_properties
   fi
 
+  # Create default docker-compose.yml if not existing
   if [ ! -f ~/greenlight/docker-compose.yml ]; then
     docker run --rm bigbluebutton/greenlight:v2 cat ./docker-compose.yml > ~/greenlight/docker-compose.yml
   fi
 
-  # change the default passwords
+  # Change the default PostgreSQL password
   PGPASSWORD=$(openssl rand -base64 24)
   sed -i "s,^\([ \t-]*POSTGRES_PASSWORD\)\(=password\),\1=$PGPASSWORD,g" ~/greenlight/docker-compose.yml
   sed -i "s,^\([ \t]*DB_PASSWORD\)\(=password\),\1=$PGPASSWORD,g" ~/greenlight/.env
@@ -693,21 +663,22 @@ HERE
     docker rm -f greenlight-v2
   fi
 
+  # Start Greenlight
   if ! docker ps | grep -q greenlight; then
     docker-compose -f ~/greenlight/docker-compose.yml up -d
     sleep 5
   fi
 }
 
-
 install_docker() {
   need_pkg apt-transport-https ca-certificates curl gnupg-agent software-properties-common openssl
 
-  # Install Docker
+  # Add apt key if not present
   if ! apt-key list | grep -q Docker; then
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
   fi
 
+  # Add repository and install Docker
   if ! dpkg -l | grep -q docker-ce; then
     add-apt-repository \
      "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
@@ -717,14 +688,23 @@ install_docker() {
     apt-get update
     need_pkg docker-ce docker-ce-cli containerd.io
   fi
-  if ! which docker; then err "Docker did not install"; fi
+  if ! which docker; then err "Docker installation failed"; fi
 
-  # Remove Docker Compose
+  install_docker_compose
+}
+
+install_docker_compose() {
+  # Remove packaged docker-compose
   if dpkg -l | grep -q docker-compose; then
     apt-get purge -y docker-compose
   fi
-}
 
+  # Install docker-compose binary
+  if [ ! -x /usr/local/bin/docker-compose ]; then
+    curl -L "https://github.com/docker/compose/releases/download/1.24.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    chmod +x /usr/local/bin/docker-compose
+  fi
+}
 
 install_ssl() {
   if ! grep -q "$HOST" /usr/local/bigbluebutton/core/scripts/bigbluebutton.yml; then
@@ -903,6 +883,60 @@ HERE
   yq w -i "$TARGET" mediasoup.plainRtp.listenIp.announcedIp "$IP"
 }
 
+install_java() {
+  need_pkg openjdk-11-jre
+  update-java-alternatives -s java-1.11.0-openjdk-amd64
+}
+
+add_ppa() {
+  # yq version 3 is provided by ppa:bigbluebutton/support
+  # Uncomment the following to enable yq 4 after bigbluebutton/bigbluebutton#14511 is resolved
+  #need_ppa rmescandon-ubuntu-yq-bionic.list         ppa:rmescandon/yq          CC86BB64 # Edit yaml files with yq
+
+  #need_ppa libreoffice-ubuntu-ppa-focal.list       ppa:libreoffice/ppa        1378B444 # Latest version of libreoffice
+  need_ppa bigbluebutton-ubuntu-support-focal.list ppa:bigbluebutton/support  E95B94BC # Needed for libopusenc0
+  if ! apt-key list 5AFA7A83 | grep -q -E "1024|4096"; then   # Add Kurento package
+    sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 5AFA7A83
+  fi
+}
+
+install_nodejs() {
+  if grep -q 12 /etc/apt/sources.list.d/nodesource.list ; then # Node 12 might be installed, previously used in BigBlueButton
+    sudo apt-get purge nodejs
+    sudo rm -r /etc/apt/sources.list.d/nodesource.list
+  fi
+  if [ ! -f /etc/apt/sources.list.d/nodesource.list ]; then
+    curl -sL https://deb.nodesource.com/setup_16.x | sudo -E bash -
+  fi
+  if ! apt-cache madison nodejs | grep -q node_16; then
+    err "Did not detect nodejs 16.x candidate for installation"
+  fi
+}
+
+install_mongodb() {
+  if ! apt-key list MongoDB | grep -q 4.4; then
+    wget -qO - https://www.mongodb.org/static/pgp/server-4.4.asc | sudo apt-key add -
+  fi
+  echo "deb [ arch=amd64 ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/4.4 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-4.4.list
+  rm -f /etc/apt/sources.list.d/mongodb-org-4.2.list
+
+  touch /root/.rnd
+  MONGODB=mongodb-org
+}
+
+configure_freeswitch_service() {
+  if systemctl status freeswitch.service | grep -q SETSCHEDULER; then
+    sed -i "s/^CPUSchedulingPolicy=rr/#CPUSchedulingPolicy=rr/g" /lib/systemd/system/freeswitch.service
+    systemctl daemon-reload
+  fi
+}
+
+configure_language() {
+  if ! systemctl show-environment | grep LANG= | grep -q UTF-8; then
+    sudo systemctl set-environment LANG=C.UTF-8
+  fi
+}
+
 configure_coturn() {
   cat <<HERE > $TURN_XML
 <?xml version="1.0" encoding="UTF-8"?>
@@ -945,7 +979,6 @@ configure_coturn() {
 </beans>
 HERE
 }
-
 
 install_coturn() {
   apt-get update
@@ -1017,7 +1050,7 @@ HERE
 }
 HERE
 
-  # Eanble coturn to bind to port 443 with CAP_NET_BIND_SERVICE
+  # Enable coturn to bind to port 443 with CAP_NET_BIND_SERVICE
   mkdir -p /etc/systemd/system/coturn.service.d
   rm -rf /etc/systemd/system/coturn.service.d/ansible.conf      # Remove previous file 
   cat > /etc/systemd/system/coturn.service.d/override.conf <<HERE
@@ -1051,7 +1084,6 @@ HERE
   systemctl start coturn
 }
 
-
 setup_ufw() {
   if [ ! -f /etc/bigbluebutton/bbb-conf/apply-config.sh ]; then
     cat > /etc/bigbluebutton/bbb-conf/apply-config.sh << HERE
@@ -1067,4 +1099,3 @@ HERE
 }
 
 main "$@" || exit 1
-
